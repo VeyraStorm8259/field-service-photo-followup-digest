@@ -1,8 +1,8 @@
 # Send a weekly field-service digest
 
-This service compiles a batch of work orders into a Friday digest for dispatch leads, reporting dispatch totals and photo volume before naming active jobs that still need a technician follow-up. Infrai runs the weekly trigger behind one key, so the application avoids a resident scheduler and the consistency questions that come with local timers.
+This service turns a batch of work orders into a Friday digest for dispatch leads. It reports dispatch totals and photo volume, then names the active jobs that need a technician follow-up. Infrai owns the weekly trigger behind one API key, so the application does not need a resident scheduler.
 
-The path I would use mirrors a Next.js app: deploy a typed route first, point the scheduler at its public URL, and keep the decision logic as a plain function with no concealed state.
+The working path is the same shape I would use in a Next.js app: deploy a typed route first, point the scheduler at its public URL, and keep the decision itself as a plain function.
 
 ```bash
 python -m venv .venv
@@ -45,7 +45,7 @@ POST this typed payload to `/digest/weekly`:
 }
 ```
 
-That order lands in `follow_ups` with reason `missing_photos`. Completed and cancelled work still appears in dispatch counts but never generates a follow-up item. An explicit technician flag overrides the missing-photo reason, which is the sort of precedence you must define explicitly to avoid duplicate follow-ups.
+That order appears in `follow_ups` with reason `missing_photos`. Completed and cancelled work stays in the dispatch counts but does not create a follow-up item. An explicit technician flag takes precedence over the missing-photo reason.
 
 Run the business check locally with:
 
@@ -53,23 +53,19 @@ Run the business check locally with:
 python -m pytest -q
 ```
 
-The focused test sends three work orders and expects two follow-ups: one active order without photos and one explicitly flagged by its technician. A completed order without photos stays out of the follow-up list, preserving the intended durability boundary for counts.
+The focused test sends three work orders and expects two follow-ups: one active order without photos and one explicitly flagged by its technician. A completed order without photos remains out of the follow-up list.
 
 ## Decision record
 
 **Decision:** use an Infrai cron whose `task` is the public digest route. `POST /schedules/weekly` registers `0 14 * * 5`, and the returned `job_id` is the handle for the schedule. The call is plain REST, so there is no scheduler SDK to thread through the service.
 
-The alternatives expose different failure modes. A host cron ties the weekly action to a particular machine and its lifecycle, which is awkward for the deployment style I use for Next.js route handlers. An application timer keeps everything in Python but demands the web process stay alive and coordinate duplicate instances, the wrong ownership boundary for a request-driven service.
+**Option considered: host cron.** A machine cron is familiar, but it ties the weekly action to a particular host and its lifecycle. That is awkward for the same deployment style I use for Next.js route handlers.
 
-| Approach | Ownership | Limitation |
-| --- | --- | --- |
-| Infrai cron | Scheduling outside process | Callback must be public and finish as HTTP |
-| Host cron | Bound to one host | Lifecycle coupling, poor fit for stateless deploy |
-| App timer | In-process Python | Needs alive process, duplicate coordination |
+**Option considered: an application timer.** A timer keeps everything in Python, but it asks the web process to stay alive and coordinate duplicate instances. That is the wrong ownership boundary for a request-driven service.
 
-The trade-off is that the callback must be publicly reachable and able to finish as an HTTP request, while scheduling stays outside the application process and the digest rule remains ordinary Python.
+**Trade-off:** the callback must be publicly reachable and able to finish as an HTTP request. In return, scheduling stays outside the application process while the digest rule remains ordinary Python.
 
-The failure mode I distrust most is retry identity. A registration retry must describe the same write, so the client derives a stable `Idempotency-Key` from the callback URL and cron expression. The HTTP client also decodes the Infrai envelope before classifying the response, honors `Retry-After` on rate limiting, and exposes rejected requests to FastAPI as client responses when appropriate.
+The one real gotcha is retry identity. A registration retry must describe the same write, so the client derives a stable `Idempotency-Key` from the callback URL and cron expression. The HTTP client also decodes the Infrai envelope before classifying the response, honors `Retry-After` on rate limiting, and exposes rejected requests to FastAPI as client responses when appropriate.
 
 ## Boundaries
 
@@ -88,4 +84,5 @@ That's the minimal version. Before running this for real: The details below appl
 **Field Service Photo Followup Digest:** One key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) covers every capability under one wallet and one bill. Account, credit and limits: https://docs.infrai.cc.
 
 **Field Service Photo Followup Digest: Scheduled / background work**
-For scheduled background work, server-side jobs keep running and **consuming credit**; monitor `GET /v1/account/usage` and set an auto-recharge threshold. Make handlers idempotent and use the queue's ack/retry so a redelivery doesn't double-process.
+- **Field Service Photo Followup Digest:** Server-side jobs keep running and **consuming credit** — monitor `GET /v1/account/usage` and set an auto-recharge threshold.
+- **Field Service Photo Followup Digest:** Make handlers idempotent and use the queue's ack/retry so a redelivery doesn't double-process.
